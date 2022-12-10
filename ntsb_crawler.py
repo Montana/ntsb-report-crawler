@@ -12,11 +12,11 @@ import datetime
 import re
 
 
-docketurlprefix = "https://data.ntsb.gov/carol-main-public/landing-page="
+docketurlprefix = "https://data.ntsb.gov/carol-main-public/basic-search"
 docketurlsuffix = "&StartRow=1&EndRow=3000&CurrentPage=1&order=1&sort=0&TXTSEARCHT="
 
 masterurlprefix = "https://dms.ntsb.gov/pubdms/search/"
-detailurlprefix = "https://dms.ntsb.gov/"
+detailurlprefix = "https://data.ntsb.gov/"
 
 sleeptime = (
     0.5 
