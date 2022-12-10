@@ -12,7 +12,7 @@ import datetime
 import re
 
 
-docketurlprefix = "https://dms.ntsb.gov/pubdms/search/hitlist.cfm?docketID="
+docketurlprefix = "https://data.ntsb.gov/carol-main-public/landing-page="
 docketurlsuffix = "&StartRow=1&EndRow=3000&CurrentPage=1&order=1&sort=0&TXTSEARCHT="
 
 masterurlprefix = "https://dms.ntsb.gov/pubdms/search/"
