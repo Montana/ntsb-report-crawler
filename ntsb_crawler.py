@@ -1,159 +1,115 @@
-import requests
-from pyquery import PyQuery as pq
-from slugify import slugify
 import os
 import time
+import requests
 import argparse
-import sys
-from collections import OrderedDict
 import csv
-import datetime
-import re
+from slugify import slugify
+from pyquery import PyQuery as pq
+from collections import OrderedDict
+from datetime import datetime
 
-docketurlprefix = "https://data.ntsb.gov/carol-main-public/basic-search"
-docketurlsuffix = "&StartRow=1&EndRow=3000&CurrentPage=1&order=1&sort=0&TXTSEARCHT="
-masterurlprefix = "https://dms.ntsb.gov/pubdms/search/"
-detailurlprefix = "https://data.ntsb.gov/"
-sleeptime = 0.5
+BASE_URL = "https://data.ntsb.gov/"
+DOCKET_URL_TEMPLATE = BASE_URL + "carol-main-public/basic-search?TXTSEARCHT={}&StartRow=1&EndRow=3000&CurrentPage=1&order=1&sort=0"
+SLEEP_TIME = 1
 
-parser = argparse.ArgumentParser(description="This file attempts to fetch National Transportation Safety Board docket files.")
-parser.add_argument("docketid", metavar="docketid", help="docketID number from NTSB URL for the file you want")
+def create_output_directory(docket_id):
+    if not os.path.exists(docket_id):
+        os.mkdir(docket_id)
+    return docket_id
 
-try:
+def fetch_html(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        return pq(response.content)
+    except requests.RequestException as e:
+        print(f"Error fetching URL: {url}\n{e}")
+        return None
+
+def parse_docket_page(html, docket_id):
+    rows = html("tr.odd, tr.leave")
+    print(f"Found {len(rows)} records to process.")
+    master_dict = {}
+    
+    for row in rows:
+        columns = pq(row)("td")
+        if len(columns) < 5:
+            continue
+        
+        doc_no = int(pq(columns[0]).text().strip())
+        doc_date = datetime.strptime(pq(columns[1]).text().strip(), "%b %d, %Y").strftime("%Y-%m-%d")
+        doc_title = pq(columns[2]).text().strip()
+        doc_url = BASE_URL + pq(columns[2])("a").attr("href")
+        doc_pages = pq(columns[3]).text().strip() or 0
+        doc_photos = pq(columns[4]).text().strip() or 0
+
+        master_dict[doc_no] = {
+            "doc_date": doc_date,
+            "doc_title": doc_title,
+            "doc_url": doc_url,
+            "doc_pages": int(doc_pages),
+            "doc_photos": int(doc_photos),
+        }
+    return master_dict
+
+def download_file(url, filename):
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        with open(filename, "wb") as file:
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    file.write(chunk)
+        return True
+    except Exception as e:
+        print(f"Failed to download {url}: {e}")
+        return False
+
+def save_to_csv(master_dict, docket_id):
+    csv_file = f"{docket_id}.csv"
+    print(f"Saving data to {csv_file}")
+    
+    with open(csv_file, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        headers = ["doc_no", "doc_date", "doc_title", "doc_url", "doc_pages", "doc_photos"]
+        writer.writerow(headers)
+        for doc_no, data in master_dict.items():
+            writer.writerow([doc_no, data["doc_date"], data["doc_title"], data["doc_url"], data["doc_pages"], data["doc_photos"]])
+    print(f"Data saved to {csv_file}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Fetch National Transportation Safety Board (NTSB) docket files.")
+    parser.add_argument("docket_id", help="Docket ID to fetch data for.")
     args = parser.parse_args()
-except:
-    parser.print_help()
-    print("Get the docket ID number from the URL the NTSB gives you with a successful search.")
-    print("Example: 58493 is the number in http://dms.ntsb.gov/pubdms/search/hitlist.cfm?docketID=58493")
-    sys.exit(1)
+    
+    docket_id = args.docket_id
+    output_dir = create_output_directory(docket_id)
+    docket_url = DOCKET_URL_TEMPLATE.format(docket_id)
+    
+    print(f"Fetching docket data from {docket_url}")
+    html = fetch_html(docket_url)
+    if not html:
+        print("Failed to fetch docket page.")
+        return
+    
+    master_dict = parse_docket_page(html, docket_id)
+    print(f"Found {len(master_dict)} files to process.")
+    
+    for doc_no, data in master_dict.items():
+        filename = os.path.join(output_dir, f"{data['doc_date']}-{slugify(data['doc_title'])}.pdf")
+        if os.path.exists(filename):
+            print(f"{filename} already exists. Skipping download.")
+            continue
+        
+        print(f"Downloading {data['doc_title']} to {filename}")
+        success = download_file(data["doc_url"], filename)
+        if not success:
+            print(f"Failed to download {data['doc_title']}. Skipping.")
+            continue
 
-get_input = input
-docketid = args.docketid
+        time.sleep(SLEEP_TIME)
+    
+    save_to_csv(master_dict, docket_id)
 
-if not os.path.exists(docketid):
-    os.mkdir(docketid)
-
-docketurl = docketurlprefix + docketid + docketurlsuffix
-print(docketurl)
-raw = requests.get(docketurl)
-html = pq(raw.content)
-accidentnumber = pq(html)("title").text().split()[2]
-allrows = pq(html)("tr").filter(".odd") + pq(html)("tr").filter(".leave")
-print("Found " + str(len(allrows("tr"))) + " things to download")
-totalpages = 0
-totalphotos = 0
-masterdict = {}
-
-for row in allrows("tr"):
-    docno = int(pq(pq(row)("td")[0]).text().strip())
-    masterdict[docno] = {}
-    docdate = pq(pq(row)("td")[1]).text().strip()
-    masterdict[docno]["doctitle"] = pq(pq(row)("td")[2]).text()
-    masterdict[docno]["docmasterurl"] = masterurlprefix + pq(pq(pq(pq(row)("td")[2])("a"))).attr("href")
-    docdate = datetime.datetime.strptime(docdate, "%b %d, %Y")
-    docdate = datetime.datetime.strftime(docdate, "%Y-%m-%d")
-    masterdict[docno]["docdate"] = docdate
-    try:
-        docpages = int(str(pq(pq(row)("td")[3]).html()).replace("--", "").strip())
-    except:
-        docpages = 0
-    try:
-        docphotos = int(str(pq(pq(row)("td")[4]).html()).replace("--", "").strip())
-    except:
-        docphotos = 0
-    totalpages += docpages
-    totalphotos += docphotos
-    masterdict[docno]["docpages"] = docpages
-    masterdict[docno]["docphotos"] = docphotos
-
-print("Trying to download the " + str(len(allrows("tr"))) + " files with " + str(totalpages) + " pages and " + str(totalphotos) + " photos")
-
-for record in masterdict:
-    docmasterurl = masterdict[record]["docmasterurl"]
-    print("Scraping " + docmasterurl)
-    docmasterraw = requests.get(docmasterurl)
-    docmasterhtml = pq(docmasterraw.content)
-    try:
-        detailurl = detailurlprefix + pq(pq(docmasterhtml)("input")[1]).attr("value")
-    except:
-        print("Multiple download options found. Trying to get high-quality one for this record.")
-        detailurl = detailurlprefix + pq(pq(docmasterhtml)("option")[-2]).attr("value")
-    if detailurl == "https://dms.ntsb.gov/View":
-        detailurl = detailurlprefix + re.sub("(.*')(.*)('.*)", r"\2", pq(pq(docmasterhtml)("input")[1]).attr("onclick"))
-    if len(detailurl) <= 2 or detailurl == "http://dms.ntsb.gov/Download":
-        try:
-            detailurl = detailurlprefix + pq(pq(docmasterhtml)("option")[-2]).attr("value")
-            print("Trying alternate download link, maybe, from " + docmasterurl)
-        except:
-            print("Still having problems finding download url from " + docmasterurl)
-
-    time.sleep(sleeptime)
-    masterdict[record]["detailurl"] = detailurl
-    localfilename = masterdict[record]["doctitle"]
-    docdate = masterdict[record]["docdate"]
-    localfilename = slugify(localfilename)
-    localfilename = docdate + "-" + localfilename
-    localfilename = localfilename + "." + detailurl.split(".")[-1]
-    localfilename = docketid + "/" + localfilename
-    masterdict[record]["localfilename"] = localfilename
-
-masterdict = OrderedDict(sorted(masterdict.items(), key=lambda t: t[0]))
-
-for record in masterdict:
-    localfilename = masterdict[record]["localfilename"]
-    detailurl = masterdict[record]["detailurl"]
-    print(masterdict[record])
-    if os.path.exists(localfilename):
-        print(localfilename + " already downloaded. Skipping.")
-        masterdict[record]["download"] = "File already existed"
-    else:
-        print("Fetching " + detailurl + " to " + localfilename + ".")
-        attempts = 0
-        success = False
-        r = requests.get(detailurl, stream=True)
-        try:
-            with open(localfilename, "wb") as localfilehandle:
-                for chunk in r.iter_content(chunk_size=100 * 1024):
-                    if chunk:
-                        localfilehandle.write(chunk)
-            masterdict[record]["download"] = "Good"
-            time.sleep(sleeptime)
-            success = True
-        except:
-            print(f"!!! Error trying to write to {localfilename}")
-            masterdict[record]["download"] = "Bad"
-            time.sleep(sleeptime)
-            success = False
-
-        while attempts < 3 and not success:
-            try:
-                r = requests.get(detailurl, stream=True)
-                with open(localfilename, "wb") as localfilehandle:
-                    for chunk in r.iter_content(chunk_size=100 * 1024):
-                        if chunk:
-                            localfilehandle.write(chunk)
-                masterdict[record]["download"] = "Good"
-                time.sleep(sleeptime)
-                success = True
-            except:
-                print("*** This " + detailurl + " thing wasn't working for me. ***")
-                print("*** Try downloading the right version yourself from " + masterdict[docno]["docmasterurl"] + " ***")
-                masterdict[record]["download"] = "Bad"
-                attempts += 1
-                time.sleep(3 * sleeptime)
-
-print("Attempting to build a CSV")
-with open(docketid + ".csv", "w", newline="") as csvfile:
-    put = csv.writer(csvfile)
-    headerrowdict = OrderedDict(sorted(masterdict[record].items(), key=lambda t: t[0]))
-    headerrow = ["accidentnumber", "docketid", "recordnumber"]
-    for key in headerrowdict.keys():
-        headerrow.append(key)
-    put.writerow(headerrow)
-    for record in masterdict:
-        row = [accidentnumber, docketid, record]
-        recorddict = OrderedDict(sorted(masterdict[record].items(), key=lambda t: t[0]))
-        for key in recorddict.keys():
-            row.append(recorddict[key])
-        put.writerow(row)
-print("CSV should be saved at " + docketid + ".csv")
+if __name__ == "__main__":
+    main()
